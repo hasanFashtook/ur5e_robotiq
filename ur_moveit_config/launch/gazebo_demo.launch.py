@@ -1,7 +1,7 @@
 import os
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
-from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnProcessExit,OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -12,6 +12,7 @@ from launch.actions import SetEnvironmentVariable
 from pathlib import Path
 
 def generate_launch_description():
+
     # Declare arguments
     declared_arguments = []
     declared_arguments.append(
@@ -36,31 +37,65 @@ def generate_launch_description():
             ]
         )
     
+    
     # Initialize Arguments
     use_sim_time = LaunchConfiguration("use_sim_time")
     gz_args = LaunchConfiguration("gz_args")
 
+
+    joint_controllers_file = os.path.join(
+        get_package_share_directory("ur5e_description"), "config", "ur_controllers.yaml"
+    )
+
+
     moveit_config = (
-        MoveItConfigsBuilder("ur_robot", package_name="ur_moveit_config")
+        MoveItConfigsBuilder("custom_robot", package_name="ur_moveit_config")
         .robot_description(file_path="config/ur.urdf.xacro")
         .robot_description_semantic(file_path="config/ur.srdf")
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
+        .robot_description_kinematics(file_path="config/kinematics.yaml")
+        .planning_scene_monitor(
+            publish_robot_description=True,
+            publish_robot_description_semantic=True,
+            publish_planning_scene=True
+        )
+        .planning_pipelines(
+            pipelines=[
+                "ompl",
+                "chomp",
+                "pilz_industrial_motion_planner"
+            ]
+        )
         .to_moveit_configs()
     )
 
-    # Get URDF via xacro with Gazebo control
-    robot_description_content = Command([
-        FindExecutable(name="xacro"), " ",
-        PathJoinSubstitution([
-            FindPackageShare("ur_moveit_config"),
-            "config",
-            "ur.urdf.xacro"
-        ]),
-        " use_fake_hardware:=false",
-        " use_gazebo:=true"
-    ])
-    
-    robot_description = {"robot_description": robot_description_content}
+    x_arg = DeclareLaunchArgument(
+        name="x",
+        default_value="0.0",
+        description="X position of the robot in the world frame"
+    )
+    y_arg = DeclareLaunchArgument(
+        name="y",
+        default_value="0.0",
+        description="Y position of the robot in the world frame"
+    )  
+    z_arg = DeclareLaunchArgument(
+        name="z",
+        default_value="0.0",
+        description="Z position of the robot in the world frame"
+    ) 
+
+    # # Include Gazebo launch file
+    # gazebo = IncludeLaunchDescription(
+    #     PythonLaunchDescriptionSource(gazebo_launch_file),
+    #     launch_arguments={
+    #         "use_sim_time": "true",
+    #         "debug": "false",
+    #         "gui" : 'true',
+    #         "paused": "true",
+    #         # "world": "empty.world",
+    #     }.items(),
+    # )
 
     # Start Gazebo Harmonic
     gazebo = IncludeLaunchDescription(
@@ -71,127 +106,191 @@ def generate_launch_description():
         launch_arguments=[("gz_args", gz_args)]
     )
 
-    # Spawn robot in Gazebo
-    spawn_entity = Node(
-        package="ros_gz_sim",
-        executable="create",
-        arguments=[
-            "-topic", "robot_description",
-            "-name", "ur_robot"
-        ],
-        output="screen",
-    )
-
-    # robot_state_publisher
-    robot_state_publisher = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        output="screen",
-        parameters=[
-            robot_description,
-            {"use_sim_time": use_sim_time}
-        ],
-    )
-
-    # Bridge for /clock topic
-    clock_bridge = Node(
-        package="ros_gz_bridge",
-        executable="parameter_bridge",
-        arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
-        output="screen",
-    )
-
-    # Load controllers after spawn
-    load_joint_state_broadcaster = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
-        output="screen",
-    )
-
-    joint_trajectory_controller_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager"],
-    )
-
-    gripper_controller_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["gripper_position_controller", "--controller-manager", "/controller_manager"],
-    )
-
-
-    # Delay controller loading until robot is spawned
-    delay_joint_state_broadcaster_after_spawn = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=spawn_entity,
-            on_exit=[load_joint_state_broadcaster],
-        )
-    )
-
-    delay_joint_trajectory_controller_after_joint_state = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=load_joint_state_broadcaster,
-            on_exit=[joint_trajectory_controller_spawner],
-        )
-    )
-
-    delay_gripper_controller_after_joint_trajectory = RegisterEventHandler(
-        event_handler=OnProcessExit(
-            target_action=joint_trajectory_controller_spawner,
-            on_exit=[gripper_controller_spawner],
-        )
-    )
-
-    # move_group node
-    move_group_node = Node(
-        package="moveit_ros_move_group",
-        executable="move_group",
-        output="screen",
-        parameters=[moveit_config.to_dict(), 
-                    {"use_sim_time": use_sim_time},
-                    {"publish_robot_description_semantic": True}],
-        arguments=["--ros-args", "--log-level", "info"],
-    )
-
-    # RViz
-    rviz_config_file = PathJoinSubstitution([
-        FindPackageShare("ur_moveit_config"),
+    rviz_config_path = os.path.join(
+        get_package_share_directory('ur_moveit_config'),
         "config",
         "moveit.rviz"
-    ])
+    )
 
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
         name="rviz2",
-        output="log",
+        output='screen',
         arguments=[
-            "-d", 
-            rviz_config_file,
+            "-d", rviz_config_path,
             {"use_sim_time": use_sim_time}
-
         ],
         parameters=[
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
-            moveit_config.robot_description_kinematics,
-            moveit_config.joint_limits,
+            moveit_config.planning_pipelines,
+            moveit_config.robot_description_kinematics
         ],
     )
 
-    nodes_to_start = [
-        gazebo_resource_path,
-        gazebo,
-        robot_state_publisher,
-        clock_bridge,
-        spawn_entity,
-        delay_joint_state_broadcaster_after_spawn,
-        delay_joint_trajectory_controller_after_joint_state,
-        delay_gripper_controller_after_joint_trajectory,
-        move_group_node,
-        rviz_node,
-    ]
+    gz_ros2_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        arguments=[
+            "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock",
+        ]
+    )
 
-    return LaunchDescription(declared_arguments + nodes_to_start)
+    spawn_entity = Node(
+        package="ros_gz_sim",
+        executable="create",
+        arguments=[
+            "-topic", "robot_description",
+            "-name", "ur5e_robot",
+            '-x', LaunchConfiguration('x'),
+            '-y', LaunchConfiguration('y'),
+            '-z', LaunchConfiguration('z'),
+        ],
+        output="screen",
+        parameters=[{"use_sim_time": use_sim_time}]
+    )
+
+
+    controller_manager_node = Node(
+        package='controller_manager',
+        executable='ros2_control_node',
+        parameters=[
+            moveit_config.robot_description, 
+            joint_controllers_file, 
+            {"use_sim_time": use_sim_time}
+        ],
+        remappings=[
+            ("~/robot_description", "/robot_description"),
+        ],
+        output='screen',
+
+    )
+
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        parameters=[
+            moveit_config.robot_description
+        ],
+        output='screen'
+    )
+
+    joint_state_broadcaster_spwaner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        output="screen"
+    )
+    
+    joint_trajectory_controller_spwaner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager"],
+        output="screen"
+    )
+
+
+    robotiq_activation_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=[
+            "robotiq_activation_controller", 
+            "--controller-manager", "/controller_manager",
+            "--activate" 
+        ],
+        output="screen"
+    )
+
+    gripper_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=["gripper_controller", "--controller-manager", "/controller_manager"],
+        output="screen"
+    )
+
+    config_dict = moveit_config.to_dict()
+
+    move_group_node = Node(
+        package="moveit_ros_move_group",
+        executable="move_group",
+        output="screen",
+        parameters=[
+            config_dict,
+            {"use_sim_time": use_sim_time},
+            {"publish_robot_description_semantic": True}
+        ],
+        arguments=["--ros-args", "--log-level", "info"]
+    )
+
+    delay_controller_manager = RegisterEventHandler(
+        OnProcessStart(
+            target_action=robot_state_publisher,
+            on_start=[
+                controller_manager_node
+            ]
+        )
+    )
+
+    delay_joint_state_broadcaster = RegisterEventHandler(
+        OnProcessStart(
+            target_action=controller_manager_node,
+            on_start=[
+                joint_state_broadcaster_spwaner
+            ]
+        )
+    )
+
+    delay_joint_trajectory_controller = RegisterEventHandler(
+        OnProcessStart(
+            target_action=joint_state_broadcaster_spwaner,
+            on_start=[
+                joint_trajectory_controller_spwaner
+            ]
+        )
+    )
+
+    delay_robotiq_activation = RegisterEventHandler(
+        OnProcessStart(
+            target_action=joint_state_broadcaster_spwaner,
+            on_start=[
+                robotiq_activation_controller_spawner
+            ]
+        )
+    )
+
+    delay_gripper_controller = RegisterEventHandler(
+        OnProcessStart(
+            target_action=joint_trajectory_controller_spwaner,
+            on_start=[
+                gripper_controller_spawner
+            ]
+        )
+    )
+
+    delay_rviz_node = RegisterEventHandler(
+        OnProcessStart(
+            target_action=robot_state_publisher,
+            on_start=[
+                rviz_node
+            ]
+        )
+    )
+
+    return LaunchDescription(declared_arguments + [
+        gazebo_resource_path,
+        x_arg,
+        y_arg,
+        z_arg,
+        gazebo,
+        gz_ros2_bridge,
+        delay_controller_manager,
+        spawn_entity,
+        robot_state_publisher,
+        move_group_node,
+        delay_joint_state_broadcaster,
+        delay_joint_trajectory_controller,
+        delay_robotiq_activation,
+        delay_gripper_controller,
+        delay_rviz_node
+    ])
