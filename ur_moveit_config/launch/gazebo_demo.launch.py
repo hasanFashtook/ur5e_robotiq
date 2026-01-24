@@ -83,19 +83,7 @@ def generate_launch_description():
         name="z",
         default_value="0.0",
         description="Z position of the robot in the world frame"
-    ) 
-
-    # # Include Gazebo launch file
-    # gazebo = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource(gazebo_launch_file),
-    #     launch_arguments={
-    #         "use_sim_time": "true",
-    #         "debug": "false",
-    #         "gui" : 'true',
-    #         "paused": "true",
-    #         # "world": "empty.world",
-    #     }.items(),
-    # )
+    )
 
     # Start Gazebo Harmonic
     gazebo = IncludeLaunchDescription(
@@ -191,17 +179,6 @@ def generate_launch_description():
     )
 
 
-    robotiq_activation_controller_spawner = Node(
-        package='controller_manager',
-        executable='spawner',
-        arguments=[
-            "robotiq_activation_controller", 
-            "--controller-manager", "/controller_manager",
-            "--activate" 
-        ],
-        output="screen"
-    )
-
     gripper_controller_spawner = Node(
         package='controller_manager',
         executable='spawner',
@@ -250,14 +227,7 @@ def generate_launch_description():
         )
     )
 
-    delay_robotiq_activation = RegisterEventHandler(
-        OnProcessStart(
-            target_action=joint_state_broadcaster_spwaner,
-            on_start=[
-                robotiq_activation_controller_spawner
-            ]
-        )
-    )
+
 
     delay_gripper_controller = RegisterEventHandler(
         OnProcessStart(
@@ -290,7 +260,6 @@ def generate_launch_description():
         move_group_node,
         delay_joint_state_broadcaster,
         delay_joint_trajectory_controller,
-        delay_robotiq_activation,
         delay_gripper_controller,
         delay_rviz_node
     ])
